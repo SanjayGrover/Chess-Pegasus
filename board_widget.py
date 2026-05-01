@@ -16,7 +16,7 @@ Used by:  play_tab (Part 3)  and  analyze_tab (Part 4)
 
 import chess
 from PyQt6.QtWidgets import QWidget, QSizePolicy
-from PyQt6.QtCore    import Qt, QRect, QPoint, QSize, pyqtSignal
+from PyQt6.QtCore    import Qt, QRect, QPoint, QPointF, QSize, pyqtSignal
 from PyQt6.QtGui     import (
     QPainter, QColor, QFont, QFontMetrics,
     QBrush, QPen, QLinearGradient, QRadialGradient
@@ -79,8 +79,9 @@ class BoardWidget(QWidget):
         self._selected_sq  : int | None        = None   # square user clicked
         self._legal_targets: set[int]          = set()  # squares piece can go to
         self._last_move    : chess.Move | None = None
-        self._hover_sq     : int | None        = None
-        self._interactive  : bool              = True   # False in analysis replay
+        self._hover_sq      : int | None        = None
+        self._interactive   : bool              = True   # False in analysis replay
+        self._game_over_text: str | None        = None   # set when game ends
 
         self.setMouseTracking(True)
 
@@ -88,10 +89,11 @@ class BoardWidget(QWidget):
 
     def set_board(self, board: chess.Board, last_move: chess.Move | None = None):
         """Replace the displayed position."""
-        self._board       = board.copy()
-        self._last_move   = last_move
-        self._selected_sq = None
-        self._legal_targets = set()
+        self._board          = board.copy()
+        self._last_move      = last_move
+        self._selected_sq    = None
+        self._legal_targets  = set()
+        self._game_over_text = None
         self.update()
         self.position_changed.emit(self._board)
 
@@ -105,6 +107,17 @@ class BoardWidget(QWidget):
     def flip(self):
         self._flipped = not self._flipped
         self.update()
+        
+    def reset_game(self):
+        """Clears the game-over state and resets the board to the starting position."""
+        self._board = chess.Board()
+        self._last_move = None
+        self._selected_sq = None
+        self._legal_targets = set()
+        self._game_over_text = None
+        self._interactive = True
+        self.update()
+        self.position_changed.emit(self._board)
 
     @property
     def board(self) -> chess.Board:
@@ -119,6 +132,7 @@ class BoardWidget(QWidget):
             self._legal_targets = set()
             self.update()
             self.position_changed.emit(self._board)
+            self._check_game_over()
 
     def undo_move(self):
         if self._board.move_stack:
@@ -185,6 +199,7 @@ class BoardWidget(QWidget):
         self._draw_coordinates(p)
         self._draw_pieces(p)
         self._draw_legal_dots(p)
+        self._draw_game_over_overlay(p)
         p.end()
 
     def _draw_border(self, p: QPainter):
@@ -299,6 +314,55 @@ class BoardWidget(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(Qt.PenStyle.NoPen)
 
+    def _draw_game_over_overlay(self, p: QPainter):
+        """Semi-transparent banner across the board announcing the result."""
+        if not self._game_over_text:
+            return
+
+        sq_size = self._square_size()
+        orig    = self._board_origin()
+        board_rect = QRect(orig.x(), orig.y(), sq_size * 8, sq_size * 8)
+
+        # Dark translucent full-board wash
+        p.fillRect(board_rect, QColor(0, 0, 0, 140))
+
+        # Banner strip in the middle third
+        banner_h = max(70, sq_size * 2)
+        banner_y = orig.y() + (sq_size * 8 - banner_h) // 2
+        banner   = QRect(orig.x(), banner_y, sq_size * 8, banner_h)
+
+        # Gold gradient banner background
+        grad = QLinearGradient(QPointF(banner.topLeft()), QPointF(banner.bottomLeft()))
+        grad.setColorAt(0.0, QColor("#3a2a00"))
+        grad.setColorAt(0.5, QColor("#5a4200"))
+        grad.setColorAt(1.0, QColor("#3a2a00"))
+        p.fillRect(banner, QBrush(grad))
+
+        # Gold border lines
+        p.setPen(QPen(QColor("#c9a96e"), 2))
+        p.drawLine(banner.topLeft(),    banner.topRight())
+        p.drawLine(banner.bottomLeft(), banner.bottomRight())
+
+        # Main result text
+        lines = self._game_over_text.split("\n")
+        main_text = lines[0]
+        sub_text  = lines[1] if len(lines) > 1 else ""
+
+        # FIX: Combine PyQt6 flags safely by casting to int
+        main_flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap)
+        sub_flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignBottom) | int(Qt.TextFlag.TextWordWrap)
+
+        main_font = QFont("Segoe UI", max(16, sq_size // 3), QFont.Weight.Bold)
+        p.setFont(main_font)
+        p.setPen(QColor("#f0d060"))
+        p.drawText(banner, main_flags, "\n" + main_text)
+
+        if sub_text:
+            sub_font = QFont("Segoe UI", max(10, sq_size // 5))
+            p.setFont(sub_font)
+            p.setPen(QColor("#c9a96e"))
+            p.drawText(banner, sub_flags, sub_text + "\n")
+
     # ── Mouse interaction ──────────────────────────────────────────────────────
 
     def mouseMoveEvent(self, event):
@@ -310,6 +374,8 @@ class BoardWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        if self._game_over_text:
+            return   # board is locked after game ends
         if not self._interactive:
             sq = self._point_to_square(event.pos())
             if sq is not None:
@@ -344,6 +410,7 @@ class BoardWidget(QWidget):
                 self.update()
                 self.move_made.emit(move)
                 self.position_changed.emit(self._board)
+                self._check_game_over()
             elif sq == self._selected_sq:
                 # Click same square: deselect
                 self._selected_sq   = None
@@ -362,6 +429,25 @@ class BoardWidget(QWidget):
                     self._selected_sq   = None
                     self._legal_targets = set()
 
+        self.update()
+
+    def _check_game_over(self):
+        """Detect end-of-game and set the overlay text."""
+        b = self._board
+        if b.is_checkmate():
+            winner = "White" if b.turn == chess.BLACK else "Black"
+            self._game_over_text = f"Checkmate!  {winner} wins ♚\nClick Reset to play again"
+        elif b.is_stalemate():
+            self._game_over_text = "Stalemate!\nIt's a draw — Click Reset to play again"
+        elif b.is_insufficient_material():
+            self._game_over_text = "Draw!\nInsufficient material"
+        elif b.is_seventyfive_moves():
+            self._game_over_text = "Draw!\n75-move rule"
+        elif b.is_fivefold_repetition():
+            self._game_over_text = "Draw!\nFivefold repetition"
+        else:
+            return   # game still going
+        self._interactive = False
         self.update()
 
     def _build_move(self, from_sq: int, to_sq: int) -> chess.Move:

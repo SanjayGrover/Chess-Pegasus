@@ -45,12 +45,13 @@ class TestWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _reset(self):
-        self.board_w.set_board(chess.Board())
+        self.board_w.reset_game()
 
     def _load_sample(self):
         # Interesting middlegame position
         board = chess.Board("r1bqk2r/pp2bppp/2nppn2/8/3NP3/2N1B3/PPP1BPPP/R2QK2R w KQkq - 0 8")
         self.board_w.set_board(board)
+    
 
 
 if __name__ == "__main__":
