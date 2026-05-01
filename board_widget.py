@@ -216,7 +216,8 @@ class BoardWidget(QWidget):
 
             # Check glow on king square
             if sq == king_sq:
-                grad = QRadialGradient(rect.center(), rect.width() * 0.6)
+                c    = rect.center()
+                grad = QRadialGradient(c.x(), c.y(), rect.width() * 0.6)
                 grad.setColorAt(0.0, QColor(255, 0, 0, 180))
                 grad.setColorAt(1.0, QColor(255, 0, 0, 0))
                 p.fillRect(rect, QBrush(grad))
