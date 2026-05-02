@@ -4,11 +4,12 @@ analyzer.py  —  Game Analyzer & Move Classifier
 Runs Stockfish over every position in a PGN game and assigns
 chess.com-style classifications to each move.
 
-Classifications (White's centipawn-loss thresholds):
-  ✨ Brilliant   — only engine move AND a sacrifice (material loss)
-  !! Great Move  — only engine move, not a sacrifice
-  ✓  Best        — matches engine's top choice (within 5 cp)
-  ★  Excellent   — cp loss 0–10
+Classifications (centipawn-loss thresholds from moving side's POV):
+  ✨ Brilliant   — top engine move AND a material sacrifice
+  !! Great Move  — top engine move AND all other moves lead to a
+                   significantly worse position (2nd best causes >= 150 cp drop)
+  ✓  Best        — within 5 cp of engine top choice
+  ★  Excellent   — cp loss 6–10
   ●  Good        — cp loss 11–25
   ?! Inaccuracy  — cp loss 26–50
   ?  Mistake     — cp loss 51–100
@@ -16,7 +17,6 @@ Classifications (White's centipawn-loss thresholds):
 
 Special:
   ♟  Forced      — only one legal move available
-  ✦  Book        — first N moves (opening book, not evaluated)
 
 Used by: analysis_panel.py (Part 6), play_tab (Part 5)
 """
@@ -45,7 +45,6 @@ class Classification(Enum):
     MISTAKE     = auto()
     BLUNDER     = auto()
     FORCED      = auto()
-    BOOK        = auto()
 
 # Display metadata for each classification
 CLASS_META = {
@@ -58,19 +57,22 @@ CLASS_META = {
     Classification.MISTAKE    : ("?",  "Mistake",    "#d4622a"),  # red-orange
     Classification.BLUNDER    : ("??", "Blunder",    "#c62828"),  # red
     Classification.FORCED     : ("♟",  "Forced",     "#888888"),  # grey
-    Classification.BOOK       : ("✦",  "Book",       "#a78bfa"),  # purple
 }
 
-# Centipawn loss thresholds (from moving side's perspective)
-# Any loss BELOW the threshold gets that classification
+# Centipawn loss thresholds (from moving side's perspective).
+# Applied after Brilliant/Great/Forced checks fail.
+# Any loss BELOW the threshold → that classification.
 CP_THRESHOLDS = [
-    (5,   Classification.BEST),
-    (10,  Classification.EXCELLENT),
-    (25,  Classification.GOOD),
-    (50,  Classification.INACCURACY),
-    (100, Classification.MISTAKE),
+    (10,   Classification.BEST),
+    (20,  Classification.EXCELLENT),
+    (50,  Classification.GOOD),
+    (100,  Classification.INACCURACY),
+    (150, Classification.MISTAKE),
 ]
 # > 100 cp loss → BLUNDER
+
+# How much worse the 2nd-best move must be (cp) for a move to qualify as GREAT
+GREAT_MOVE_MARGIN = 200
 
 
 # ── Data classes ───────────────────────────────────────────────────────────────
@@ -117,9 +119,6 @@ class MoveAnalysis:
         """Human-readable one-liner, like chess.com's explanation."""
         cls = self.classification
 
-        if cls == Classification.BOOK:
-            return "Opening book move."
-
         if cls == Classification.FORCED:
             return "Only legal move in this position."
 
@@ -133,7 +132,7 @@ class MoveAnalysis:
 
         descriptions = {
             Classification.BRILLIANT  : f"Brilliant sacrifice! Only top engine move.{best_str}",
-            Classification.GREAT      : f"Only the best move in this position!{best_str}",
+            Classification.GREAT      : "Only move that keeps the position from collapsing!",
             Classification.BEST       : f"Best move.{best_str}",
             Classification.EXCELLENT  : f"Excellent move.{cp_str}{best_str}",
             Classification.GOOD       : f"Good move.{cp_str}{best_str}",
@@ -199,9 +198,6 @@ def _accuracy_from_win_probs(before_cp: int, after_cp: int) -> float:
 
 # ── Classifier ─────────────────────────────────────────────────────────────────
 
-BOOK_MOVES = 10   # first N plies are considered "book" (not evaluated)
-
-
 def _is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
     """
     Heuristic: a move is a sacrifice if the moving piece lands on a square
@@ -224,7 +220,7 @@ def _is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
     # Check if any opponent piece can recapture on to_square
     b2 = board.copy()
     b2.push(move)
-    attackers = b2.attackers(b2.turn, move.to_square)   # opponent's turn after move
+    attackers = b2.attackers(b2.turn, move.to_square)
     if not attackers:
         return False
 
@@ -239,59 +235,87 @@ def _is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
 
 
 def classify_move(
-    board_before  : chess.Board,
-    move          : chess.Move,
-    eval_before   : MoveEval,
-    eval_after    : MoveEval,   # engine's best from position AFTER the move (opponent's POV)
-    ply           : int,
+    board_before   : chess.Board,
+    move           : chess.Move,
+    pos_eval       : "PositionEval",   # full multipv evaluation of position BEFORE the move
 ) -> tuple[Classification, Optional[int]]:
     """
-    Classify a single move.
+    Classify a single move using only the pre-move multipv evaluation.
 
-    Returns (Classification, cp_loss_from_moving_side)
+    cp_loss = top_candidate_score - played_move_score
+    Both scores are from the side-to-move's POV (via score.relative in engine),
+    so no sign flipping is needed at all.
+
+    If the played move is not among the engine's top candidates, we evaluate
+    it directly by finding its score via a targeted single-move analysis.
+
+    Parameters
+    ----------
+    board_before : position before the move was played
+    move         : the move that was actually played
+    pos_eval     : PositionEval from engine.evaluate(..., multipv=N) before the move
+
+    Returns
+    -------
+    (Classification, cp_loss)  where cp_loss is None for FORCED moves.
     """
 
-    # Book moves
-    if ply <= BOOK_MOVES:
-        return Classification.BOOK, None
-
-    # Forced move
+    # ── Forced move ────────────────────────────────────────────────────────────
     legal = list(board_before.legal_moves)
     if len(legal) == 1:
         return Classification.FORCED, None
 
-    # Get scores from moving side's perspective
-    # eval_before.score_cp  = best score available BEFORE the move (moving side)
-    # eval_after.score_cp   = score of position AFTER the move (opponent has best)
-    #   → we flip eval_after to get moving side's score after their move
+    candidates = pos_eval.candidates
+    if not candidates:
+        return Classification.GOOD, 0   # fallback
 
-    best_cp_before = _normalise_cp(eval_before)
-    actual_cp_after = _normalise_cp(eval_after)   # already flipped in engine.score_after_move
+    top_eval    = candidates[0]
+    second_eval = candidates[1] if len(candidates) > 1 else None
 
+    top_cp = _normalise_cp(top_eval)
+
+    # ── Find the score of the played move among candidates ────────────────────
+    played_candidate = next((c for c in candidates if c.move == move), None)
+
+    if played_candidate is not None:
+        played_cp = _normalise_cp(played_candidate)
+    else:
+        # Played move wasn't in the top-N candidates — it's worse than all of them.
+        # Assign it a score slightly worse than the last candidate.
+        worst_candidate = candidates[-1]
+        worst_cp = _normalise_cp(worst_candidate)
+        # Penalise conservatively: we don't know exactly how bad, but it's at
+        # least as bad as the worst candidate we saw. Use worst_cp - 50 as estimate.
+        played_cp = (worst_cp - 50) if worst_cp is not None else -500
+
+    # ── Compute cp loss ────────────────────────────────────────────────────────
     cp_loss: int = 0
-    if best_cp_before is not None and actual_cp_after is not None:
-        cp_loss = max(0, best_cp_before - actual_cp_after)
-    elif eval_before.mate_in is not None and eval_before.mate_in > 0:
-        # Had a forced mate, if we no longer have one → big loss
-        if eval_after.mate_in is None or eval_after.mate_in <= 0:
-            cp_loss = 500   # effectively a blunder of a won position
+    if top_cp is not None and played_cp is not None:
+        cp_loss = max(0, top_cp - played_cp)
+    elif top_eval.mate_in is not None and top_eval.mate_in > 0:
+        # Had a forced mate available
+        if played_candidate is None or played_candidate.mate_in is None or played_candidate.mate_in <= 0:
+            cp_loss = 500   # threw away a won position
         else:
-            cp_loss = max(0, eval_before.mate_in - eval_after.mate_in) * 50
+            cp_loss = max(0, top_eval.mate_in - played_candidate.mate_in) * 50
 
-    # Check if the played move matches the engine's best
-    is_best_move = (move == eval_before.move)
+    # ── Check if the played move IS the engine's top choice ───────────────────
+    is_top_move = (move == top_eval.move)
 
-    # Brilliant: only move that's best AND involves a sacrifice
-    if is_best_move and _is_sacrifice(board_before, move):
-        # Only classify brilliant if it's significantly better than 2nd best
-        # (i.e. truly the engine's top pick, not just tied)
+    # ── Brilliant: top move AND a material sacrifice ───────────────────────────
+    if is_top_move and _is_sacrifice(board_before, move):
         return Classification.BRILLIANT, cp_loss
 
-    # Great: only the best move (engine's top), not a sacrifice
-    if is_best_move and cp_loss == 0:
-        return Classification.GREAT, cp_loss
+    # ── Great: top move AND 2nd-best move is significantly worse ──────────────
+    # i.e. truly the only move that keeps the position tenable
+    if is_top_move and second_eval is not None and top_cp is not None:
+        second_cp   = _normalise_cp(second_eval)
+        if second_cp is not None:
+            second_loss = top_cp - second_cp
+            if second_loss >= GREAT_MOVE_MARGIN:
+                return Classification.GREAT, cp_loss
 
-    # Threshold-based for everything else
+    # ── Threshold-based for everything else ───────────────────────────────────
     for threshold, cls in CP_THRESHOLDS:
         if cp_loss <= threshold:
             return cls, cp_loss
@@ -350,11 +374,8 @@ class Analyzer:
             moves_list.append(temp_node.move)
         total = len(moves_list)
 
-        # Evaluate starting position
-        prev_eval = self.engine.evaluate(board, depth=self.depth, multipv=1).best
-        if prev_eval is None:
-            # Fallback for edge cases
-            prev_eval = MoveEval(chess.Move.null(), 0, None, [])
+        # Evaluate starting position with multipv=5 so played move is likely a candidate
+        prev_pos = self.engine.evaluate(board, depth=self.depth, multipv=5)
 
         while node.variations:
             next_node = node.variations[0]
@@ -367,25 +388,17 @@ class Analyzer:
             if progress_cb:
                 progress_cb(ply, total)
 
-            # Score the position after the played move (from moving side's POV)
-            played_eval = self.engine.score_after_move(board, move, depth=self.depth)
-
-            # Classify
-            cls, cp_loss = classify_move(
-                board,
-                move,
-                prev_eval,
-                played_eval,
-                ply,
-            )
+            # Classify using pre-move evaluation only — no score_after_move needed
+            cls, cp_loss = classify_move(board, move, prev_pos)
 
             # Best move SAN
+            top_eval = prev_pos.best
             best_san = None
-            if prev_eval.move and prev_eval.move != move:
+            if top_eval and top_eval.move and top_eval.move != move:
                 try:
-                    best_san = board.san(prev_eval.move)
+                    best_san = board.san(top_eval.move)
                 except Exception:
-                    best_san = prev_eval.move.uci()
+                    best_san = top_eval.move.uci()
 
             results.append(MoveAnalysis(
                 move           = move,
@@ -394,20 +407,17 @@ class Analyzer:
                 color          = color,
                 classification = cls,
                 cp_loss        = cp_loss,
-                eval_before    = prev_eval,
-                eval_after     = played_eval,
-                best_move      = prev_eval.move,
+                eval_before    = top_eval,
+                eval_after     = None,
+                best_move      = top_eval.move if top_eval else None,
                 best_move_san  = best_san,
-                pv             = prev_eval.pv,
+                pv             = top_eval.pv if top_eval else [],
             ))
 
-            # Advance
+            # Advance board and evaluate new position
             board.push(move)
-            node = next_node
-
-            # Evaluate new position (becomes prev_eval for next move)
-            new_pos = self.engine.evaluate(board, depth=self.depth, multipv=1)
-            prev_eval = new_pos.best if new_pos.best else MoveEval(chess.Move.null(), 0, None, [])
+            node     = next_node
+            prev_pos = self.engine.evaluate(board, depth=self.depth, multipv=5)
 
         # ── Compute accuracy scores ────────────────────────────────────────
         white_acc = self._compute_accuracy(results, chess.WHITE)
@@ -427,21 +437,23 @@ class Analyzer:
 
     @staticmethod
     def _compute_accuracy(moves: list[MoveAnalysis], color: chess.Color) -> float:
-        """Average per-move accuracy for one side, skipping book/forced."""
+        """
+        Average per-move accuracy for one side, skipping FORCED moves.
+        Uses cp_loss directly since all scores are already in side-to-move POV.
+        """
         scores = []
         for m in moves:
             if m.color != color:
                 continue
-            if m.classification in (Classification.BOOK, Classification.FORCED):
+            if m.classification == Classification.FORCED:
                 continue
-            if m.eval_before is None or m.eval_after is None:
+            if m.eval_before is None:
                 continue
 
             before_cp = _normalise_cp(m.eval_before) or 0
-            after_cp  = _normalise_cp(m.eval_after)  or 0
+            # after_cp = before_cp minus the loss we already computed
+            after_cp  = before_cp - (m.cp_loss or 0)
 
-            # Both scores are from moving side's POV; after is already flipped
-            # so we use before directly vs after
             acc = _accuracy_from_win_probs(before_cp, after_cp)
             scores.append(acc)
 
@@ -512,10 +524,6 @@ class AnalyzerWorker(QObject):
 
     def run(self):
         try:
-            analyzer = Analyzer(self._engine, self._depth)
-
-            # Patch progress callback to also emit move_done incrementally
-            # We re-implement the loop here to support move_done signal
             board    = self._game.board()
             node     = self._game
             results  : list[MoveAnalysis] = []
@@ -528,9 +536,7 @@ class AnalyzerWorker(QObject):
                 moves_list.append(temp.move)
             total = len(moves_list)
 
-            prev_eval = self._engine.evaluate(board, depth=self._depth, multipv=1).best
-            if prev_eval is None:
-                prev_eval = MoveEval(chess.Move.null(), 0, None, [])
+            prev_pos = self._engine.evaluate(board, depth=self._depth, multipv=5)
 
             while node.variations and not self._abort:
                 next_node = node.variations[0]
@@ -541,15 +547,15 @@ class AnalyzerWorker(QObject):
 
                 self.progress.emit(ply, total)
 
-                played_eval = self._engine.score_after_move(board, move, depth=self._depth)
-                cls, cp_loss = classify_move(board, move, prev_eval, played_eval, ply)
+                cls, cp_loss = classify_move(board, move, prev_pos)
 
+                top_eval = prev_pos.best
                 best_san = None
-                if prev_eval.move and prev_eval.move != move:
+                if top_eval and top_eval.move and top_eval.move != move:
                     try:
-                        best_san = board.san(prev_eval.move)
+                        best_san = board.san(top_eval.move)
                     except Exception:
-                        best_san = prev_eval.move.uci()
+                        best_san = top_eval.move.uci()
 
                 ma = MoveAnalysis(
                     move           = move,
@@ -558,20 +564,18 @@ class AnalyzerWorker(QObject):
                     color          = color,
                     classification = cls,
                     cp_loss        = cp_loss,
-                    eval_before    = prev_eval,
-                    eval_after     = played_eval,
-                    best_move      = prev_eval.move,
+                    eval_before    = top_eval,
+                    eval_after     = None,
+                    best_move      = top_eval.move if top_eval else None,
                     best_move_san  = best_san,
-                    pv             = prev_eval.pv,
+                    pv             = top_eval.pv if top_eval else [],
                 )
                 results.append(ma)
                 self.move_done.emit(ma)
 
                 board.push(move)
-                node = next_node
-
-                new_pos   = self._engine.evaluate(board, depth=self._depth, multipv=1)
-                prev_eval = new_pos.best if new_pos.best else MoveEval(chess.Move.null(), 0, None, [])
+                node     = next_node
+                prev_pos = self._engine.evaluate(board, depth=self._depth, multipv=5)
 
             if not self._abort:
                 white_acc    = Analyzer._compute_accuracy(results, chess.WHITE)
