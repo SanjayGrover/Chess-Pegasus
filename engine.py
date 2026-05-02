@@ -136,9 +136,13 @@ class ChessEngine:
         board   : chess.Board,
         depth   : int = 15,
         multipv : int = 1,
-    ) -> PositionEval:
+    ) -> "PositionEval":
         """
         Analyse a position and return the top `multipv` candidate moves.
+
+        All scores are from the SIDE-TO-MOVE's perspective (positive = good
+        for whoever is playing). This makes cp_loss = top_score - played_score
+        with zero sign-flipping needed anywhere in the analyzer.
 
         Parameters
         ----------
@@ -148,7 +152,7 @@ class ChessEngine:
 
         Returns
         -------
-        PositionEval  with `.candidates` sorted best-first (White's POV)
+        PositionEval  with `.candidates` sorted best-first (side-to-move POV)
         """
         if self._engine is None:
             raise RuntimeError("Engine not open. Call open() first.")
@@ -156,9 +160,9 @@ class ChessEngine:
         if board.is_game_over():
             return PositionEval([])
 
-        limit      = chess.engine.Limit(depth=depth)
-        multipv    = max(1, min(multipv, len(list(board.legal_moves))))
-        info_list  = self._engine.analyse(board, limit, multipv=multipv)
+        limit     = chess.engine.Limit(depth=depth)
+        multipv   = max(1, min(multipv, len(list(board.legal_moves))))
+        info_list = self._engine.analyse(board, limit, multipv=multipv)
 
         candidates: list[MoveEval] = []
         for info in info_list:
@@ -166,28 +170,31 @@ class ChessEngine:
             if move is None:
                 continue
 
-            score  = info.get("score")
-            pv     = info.get("pv", [])
+            score = info.get("score")
+            pv    = info.get("pv", [])
 
-            # Normalise score to White's absolute POV
             cp_score : Optional[int] = None
             mate     : Optional[int] = None
 
             if score is not None:
-                white_score = score.white()
-                if white_score.is_mate():
-                    mate = white_score.mate()
+                # .relative = score from side-to-move's POV — no flip needed
+                rel = score.relative
+                if rel.is_mate():
+                    mate = rel.mate()
                 else:
-                    cp_score = white_score.score()
+                    cp_score = rel.score()
 
             candidates.append(MoveEval(move, cp_score, mate, pv))
 
-        # Sort best-first from White's perspective
+        # Sort best-first from side-to-move's perspective:
+        # winning mate (positive, smaller = sooner) > high cp > losing mate
         def sort_key(e: MoveEval):
             if e.mate_in is not None:
-                # Mate wins > any cp score; closer mate = better
-                return (1, -e.mate_in if e.mate_in > 0 else e.mate_in)
-            return (0, e.score_cp if e.score_cp is not None else -99999)
+                if e.mate_in > 0:
+                    return (2, 10000 - e.mate_in)   # winning: fewer moves = better
+                else:
+                    return (0, e.mate_in)            # losing: less negative = better
+            return (1, e.score_cp if e.score_cp is not None else -99999)
 
         candidates.sort(key=sort_key, reverse=True)
         return PositionEval(candidates)
@@ -196,39 +203,6 @@ class ChessEngine:
         """Convenience: return only the single best move."""
         result = self.evaluate(board, depth=depth, multipv=1)
         return result.best_move
-
-    def score_after_move(
-        self,
-        board : chess.Board,
-        move  : chess.Move,
-        depth : int = 15,
-    ) -> MoveEval:
-        """
-        Push `move` on a copy of `board`, evaluate the resulting position,
-        and return a MoveEval from the *moving side's* perspective.
-
-        Used by the analyzer to score each played move.
-        """
-        b2 = board.copy()
-        b2.push(move)
-        pos = self.evaluate(b2, depth=depth, multipv=1)
-
-        if pos.best is None:
-            # Game over after the move
-            outcome = b2.outcome()
-            if outcome is not None and outcome.winner == board.turn:
-                return MoveEval(move, None, 1, [])    # checkmate delivered
-            return MoveEval(move, 0, None, [])
-
-        best = pos.best
-        # Flip sign: the engine score is from the side that just moved TO
-        # We want it from the side that MADE the move (board.turn before push)
-        if best.mate_in is not None:
-            flipped_mate = -best.mate_in
-            return MoveEval(move, None, flipped_mate, best.pv)
-        else:
-            flipped_cp = -(best.score_cp or 0)
-            return MoveEval(move, flipped_cp, None, best.pv)
 
 
 # ── Qt Worker — non-blocking engine calls ──────────────────────────────────────
