@@ -37,40 +37,6 @@ ORG_NAME    = "ChessMasterPro"
 # Default Stockfish path — user can override in Settings
 DEFAULT_STOCKFISH_PATH = r"C:\stockfish\stockfish.exe"
 
-
-# ── Placeholder tab widgets (will be replaced in later parts) ──────────────────
-
-class PlaceholderTab(QWidget):
-    """Temporary placeholder shown until the real module is built."""
-
-    def __init__(self, title: str, description: str, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        icon_label = QLabel("♟")
-        icon_label.setFont(QFont("Segoe UI", 64))
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet("color: #c9a96e;")
-
-        title_label = QLabel(title)
-        title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("color: #e8d5b0;")
-
-        desc_label = QLabel(description)
-        desc_label.setFont(QFont("Segoe UI", 11))
-        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("color: #8a7a5a; max-width: 400px;")
-
-        layout.addWidget(icon_label)
-        layout.addSpacing(12)
-        layout.addWidget(title_label)
-        layout.addSpacing(8)
-        layout.addWidget(desc_label)
-
-
 # ── Settings Dialog ────────────────────────────────────────────────────────────
 
 class SettingsDialog(QDialog):
