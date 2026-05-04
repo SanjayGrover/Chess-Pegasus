@@ -22,6 +22,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSettings, QSize
 from PyQt6.QtGui import QIcon, QFont, QPalette, QColor, QAction
 
+from play_tab import PlayTab
+from analyze_tab import AnalyzeTab
+from import_tab import ImportTab
+from puzzle_tab import PuzzleTab
+
 
 # ── App-wide config ────────────────────────────────────────────────────────────
 
@@ -314,36 +319,19 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         # ── Tab 1: Play ──────────────────────────────────────────────────────
-        self.play_tab = PlaceholderTab(
-            "Play vs Engine",
-            "Set your desired depth, choose your colour, and play a full game\n"
-            "against Stockfish. Coming in Part 2."
-        )
+        self.play_tab = PlayTab(self)
         self.tabs.addTab(self.play_tab, "♟  Play")
 
         # ── Tab 2: Analyze ───────────────────────────────────────────────────
-        self.analyze_tab = PlaceholderTab(
-            "Game Analysis",
-            "Load a PGN and get a full move-by-move breakdown with\n"
-            "Brilliant ✨, Great !, Mistake ?, Blunder ?? classifications.\n"
-            "Coming in Part 3 & 4."
-        )
+        self.analyze_tab = AnalyzeTab(self)
         self.tabs.addTab(self.analyze_tab, "🔍  Analyze")
 
         # ── Tab 3: Import ────────────────────────────────────────────────────
-        self.import_tab = PlaceholderTab(
-            "Import Games",
-            "Fetch your games directly from chess.com or lichess.org\n"
-            "by username, then analyze them instantly. Coming in Part 5."
-        )
+        self.import_tab = ImportTab(self)
         self.tabs.addTab(self.import_tab, "⬇  Import")
 
         # ── Tab 4: Puzzles ───────────────────────────────────────────────────
-        self.puzzle_tab = PlaceholderTab(
-            "Puzzle Training",
-            "Solve Lichess-powered puzzles filtered by rating range.\n"
-            "Get hints and explanations. Coming in Part 6."
-        )
+        self.puzzle_tab = PuzzleTab(self)
         self.tabs.addTab(self.puzzle_tab, "🧩  Puzzles")
 
         # Status bar
