@@ -98,7 +98,7 @@ class AnalyzeTab(QWidget):
         self.progress.setFormat("Analysing…  %v / %m moves")
         self.progress.setStyleSheet(
             "QProgressBar{background:#252018;border:1px solid #3a3020;"
-            "border-radius:4px;color:#c9a96e;font-size:11px;}"
+            "border-radius:4px;color:#ffffff;font-size:11px;}"
             "QProgressBar::chunk{background:#c9a96e;border-radius:4px;}"
         )
         left.addWidget(self.progress)
@@ -173,7 +173,7 @@ class AnalyzeTab(QWidget):
         lay = QVBoxLayout(dlg)
 
         lbl = QLabel("Paste your PGN below:")
-        lbl.setStyleSheet("color:#8a7a5a;")
+        lbl.setStyleSheet("color:#ffffff;")
         lay.addWidget(lbl)
 
         txt = QTextEdit()
