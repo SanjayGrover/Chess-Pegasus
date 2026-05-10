@@ -389,10 +389,6 @@ class PlayTab(QWidget):
         board    = self.board_w.board
         to_move  = board.turn   # side that must move next
 
-        # Auto-flip board so the next player sees their pieces at the bottom
-        self.board_w._flipped = (to_move == chess.BLACK)
-        self.board_w.update()
-
         # Switch clock
         if self.clock_cb.isChecked():
             self.clock_widget.start_for(to_move)
@@ -518,8 +514,6 @@ class PlayTab(QWidget):
             if board.move_stack:
                 self.board_w.undo_move()
                 to_move = self.board_w.board.turn
-                self.board_w._flipped = (to_move == chess.BLACK)
-                self.board_w.update()
                 side = "White" if to_move == chess.WHITE else "Black"
                 self.status_lbl.setText(f"Move undone — {side}'s turn.")
         else:
