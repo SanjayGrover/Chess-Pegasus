@@ -12,13 +12,16 @@ PvP extras:
   • Flagging (time runs out) ends the game immediately
 """
 
+import os
 import random
+import datetime
 import chess
+import chess.pgn
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QComboBox, QCheckBox,
-    QSizePolicy, QFrame
+    QLineEdit, QSizePolicy, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, QSettings
 from PyQt6.QtGui  import QFont
@@ -259,7 +262,34 @@ class PlayTab(QWidget):
 
         left.addLayout(mode_row)
 
-        # ── Row 2: clock controls (always visible, optional) ───────────────
+        # ── Row 2: player names ────────────────────────────────────────────
+        names_row = QHBoxLayout()
+        names_row.setSpacing(10)
+
+        white_lbl = QLabel("♔ White:")
+        white_lbl.setStyleSheet("color:#8a7a5a;")
+        names_row.addWidget(white_lbl)
+
+        self.white_name = QLineEdit("Sanjay")
+        self.white_name.setPlaceholderText("White player name")
+        self.white_name.setFixedWidth(160)
+        names_row.addWidget(self.white_name)
+
+        names_row.addSpacing(20)
+
+        black_lbl = QLabel("♚ Black:")
+        black_lbl.setStyleSheet("color:#8a7a5a;")
+        names_row.addWidget(black_lbl)
+
+        self.black_name = QLineEdit("Sanjay")
+        self.black_name.setPlaceholderText("Black player name")
+        self.black_name.setFixedWidth(160)
+        names_row.addWidget(self.black_name)
+
+        names_row.addStretch()
+        left.addLayout(names_row)
+
+        # ── Row 3: clock controls ──────────────────────────────────────────
         clock_row = QHBoxLayout()
         clock_row.setSpacing(10)
 
@@ -549,6 +579,68 @@ class PlayTab(QWidget):
         self._flag_timer.stop()
         self.status_lbl.setText(message)
         self.new_game_btn.setText("New Game  ▶")
+        self._save_game(message)
+
+    def _save_game(self, result_msg: str):
+        """Save the completed game as a timestamped PGN in saved_games/."""
+        board = self.board_w.board
+        if not board.move_stack:
+            return   # nothing to save if no moves were made
+
+        # Determine PGN Result tag
+        outcome = board.outcome()
+        if outcome:
+            if outcome.winner == chess.WHITE:
+                pgn_result = "1-0"
+            elif outcome.winner == chess.BLACK:
+                pgn_result = "0-1"
+            else:
+                pgn_result = "1/2-1/2"
+        elif "White wins" in result_msg:
+            pgn_result = "1-0"
+        elif "Black wins" in result_msg:
+            pgn_result = "0-1"
+        else:
+            pgn_result = "*"
+
+        # Player names — fallback to "Sanjay" if left blank
+        white = self.white_name.text().strip() or "Sanjay"
+        black = self.black_name.text().strip() or "Sanjay"
+
+        # Mode tag
+        mode = "PvP" if self._pvp_mode else f"vs Stockfish (depth {self.depth_spin.value()})"
+
+        # Build the PGN game object by replaying move stack
+        game      = chess.pgn.Game()
+        now       = datetime.datetime.now()
+        game.headers["Event"]  = mode
+        game.headers["Site"]   = "ChessMaster Pro"
+        game.headers["Date"]   = now.strftime("%Y.%m.%d")
+        game.headers["Time"]   = now.strftime("%H:%M:%S")
+        game.headers["White"]  = white
+        game.headers["Black"]  = black
+        game.headers["Result"] = pgn_result
+
+        # Replay moves from a fresh board
+        tmp_board = chess.Board()
+        node      = game
+        for move in board.move_stack:
+            node = node.add_variation(move)
+            tmp_board.push(move)
+        game.headers["Result"] = pgn_result
+
+        # Write to saved_games/<timestamp>.pgn
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_games")
+        os.makedirs(save_dir, exist_ok=True)
+
+        filename  = now.strftime("%Y%m%d_%H%M%S") + f"_{white}_vs_{black}.pgn"
+        filepath  = os.path.join(save_dir, filename)
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                print(game, file=f, end="\n\n")
+        except Exception as e:
+            self.status_lbl.setText(f"{result_msg}  (save failed: {e})")
 
     # ── Eval (vs Engine only) ──────────────────────────────────────────────────
 
