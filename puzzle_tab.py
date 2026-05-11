@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QSpinBox, QSizePolicy, QProgressBar,
     QFileDialog, QFrame
 )
-from PyQt6.QtCore import Qt, QThread, QSettings, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QSettings, QObject, pyqtSignal
 from PyQt6.QtGui  import QFont, QColor
 
 from board_widget import BoardWidget
@@ -126,11 +126,23 @@ class PuzzleTab(QWidget):
         self._move_idx   : int          = 0    # index into puzzle moves
         self._solved     : bool         = False
         self._failed     : bool         = False
+        self._hint_level : int          = 0    # 0=none shown, 1=piece shown, 2=full shown
         self._thread     : QThread | None = None
         self._worker     = None
+        self._solution_timer = QTimer(self)
+        self._solution_timer.setSingleShot(False)
+        self._solution_moves : list     = []   # remaining UCI moves to replay
+        self._solution_timer.timeout.connect(self._solution_step)
 
         self._build_ui()
-        self._load_builtin()
+
+        # Auto-load CSV from last session if it still exists
+        saved_csv = self._settings.value("puzzle_csv_path", "")
+        if saved_csv and os.path.isfile(saved_csv):
+            self.queue_lbl.setText(f"Loading puzzles from last session…")
+            self._load_csv_file(saved_csv)
+        else:
+            self._load_builtin()
 
     # ── UI ─────────────────────────────────────────────────────────────────────
 
@@ -293,7 +305,7 @@ class PuzzleTab(QWidget):
         )
         if not path:
             return
-        self._settings.setValue("puzzle_csv_path", path)
+        self._settings.setValue("puzzle_csv_path", path)   # persist for next session
         self._load_csv_file(path)
 
     def _load_csv_file(self, path: str):
@@ -319,7 +331,9 @@ class PuzzleTab(QWidget):
     def _on_puzzles_loaded(self, puzzles: list):
         self._puzzles    = puzzles
         self._puzzle_idx = -1
-        self.queue_lbl.setText(f"Queue: {len(puzzles)} puzzles")
+        saved_csv = self._settings.value("puzzle_csv_path", "")
+        source    = os.path.basename(saved_csv) if saved_csv else "CSV"
+        self.queue_lbl.setText(f"Queue: {len(puzzles)} puzzles  ({source})")
         self._next_puzzle()
 
     # ── Puzzle flow ────────────────────────────────────────────────────────────
@@ -329,11 +343,16 @@ class PuzzleTab(QWidget):
             self.info_lbl.setText("No puzzles loaded. Load a CSV or use built-ins.")
             return
 
+        # Stop any running solution animation
+        self._solution_timer.stop()
+        self._solution_moves = []
+
         self._puzzle_idx = (self._puzzle_idx + 1) % len(self._puzzles)
         self._current    = self._puzzles[self._puzzle_idx]
         self._move_idx   = 0
         self._solved     = False
         self._failed     = False
+        self._hint_level = 0
 
         board = self._current.board
         # The first move in the puzzle is played by the opponent —
@@ -344,8 +363,13 @@ class PuzzleTab(QWidget):
             self._move_idx = 1
 
         self.board_w.set_board(board)
-        self.board_w.set_interactive(True)
         self.board_w._flipped = (board.turn == chess.BLACK)
+        self.board_w.set_interactive(True)   # must come AFTER set_board
+
+        # Re-enable buttons
+        self.hint_btn.setEnabled(True)
+        self.solution_btn.setEnabled(True)
+        self.result_lbl.setVisible(False)
 
         # UI
         side = "White" if board.turn == chess.WHITE else "Black"
@@ -354,9 +378,6 @@ class PuzzleTab(QWidget):
             "Themes: " + self._current.themes if self._current.themes else ""
         )
         self.rating_lbl.setText(f"Rating: {self._current.rating}")
-        self.result_lbl.setVisible(False)
-        self.hint_btn.setEnabled(True)
-        self.solution_btn.setEnabled(True)
 
     def _on_move(self, move: chess.Move):
         if self._solved or self._failed or not self._current:
@@ -366,7 +387,8 @@ class PuzzleTab(QWidget):
             if self._move_idx < len(self._current.moves_uci) else None
 
         if move.uci() == expected_uci:
-            self._move_idx += 1
+            self._hint_level = 0   # reset hint on correct move
+            self._move_idx  += 1
 
             # Apply opponent's response if there are more moves
             if self._move_idx < len(self._current.moves_uci):
@@ -378,68 +400,124 @@ class PuzzleTab(QWidget):
 
                 if self._move_idx >= len(self._current.moves_uci):
                     self._mark_solved()
+                else:
+                    side = "White" if self.board_w.board.turn == chess.WHITE else "Black"
+                    self.info_lbl.setText(f"✔ Good move! Keep going — find the best move for {side}!")
             else:
                 self._mark_solved()
         else:
-            self._mark_failed()
+            # Wrong move — undo it and let the player try again
+            self.board_w.undo_move()
+            self.board_w.set_interactive(True)
+            self.result_lbl.setText("✘  Wrong move — try again!")
+            self.result_lbl.setStyleSheet(
+                "color:#ef5350; font-size:12px; font-weight:700;"
+            )
+            self.result_lbl.setVisible(True)
 
     def _mark_solved(self):
         self._solved        = True
         self._solved_count += 1
         self._attempted    += 1
         self.board_w.set_interactive(False)
-        self.result_lbl.setText("✔  Correct!  Puzzle solved.")
+        self.result_lbl.setText("✔  Brilliant!  Puzzle solved.")
         self.result_lbl.setStyleSheet(
             "color:#7ec845; font-size:14px; font-weight:700;"
         )
         self.result_lbl.setVisible(True)
         self._update_stats()
 
-    def _mark_failed(self):
-        self._failed        = True
-        self._failed_count += 1
-        self._attempted    += 1
-        self.board_w.set_interactive(False)
-        self.result_lbl.setText("✘  Incorrect.  Click 'Show Solution' to see the answer.")
-        self.result_lbl.setStyleSheet(
-            "color:#ef5350; font-size:13px; font-weight:700;"
-        )
-        self.result_lbl.setVisible(True)
-        self._update_stats()
+    # ── Hint ───────────────────────────────────────────────────────────────────
 
     def _show_hint(self):
+        """
+        First press  → tells you WHICH piece to move (piece type + square).
+        Second press → also tells you WHERE to move it (destination square).
+        """
         if not self._current or self._move_idx >= len(self._current.moves_uci):
             return
+
         move_uci = self._current.moves_uci[self._move_idx]
         move     = chess.Move.from_uci(move_uci)
         board    = self.board_w.board
-        try:
-            san = board.san(move)
-        except Exception:
-            san = move_uci
-        from_sq = chess.square_name(move.from_square)
-        self.info_lbl.setText(f"💡 Hint: piece on {from_sq}")
+
+        piece       = board.piece_at(move.from_square)
+        piece_name  = chess.piece_name(piece.piece_type).capitalize() if piece else "Piece"
+        from_name   = chess.square_name(move.from_square)   # e.g. "h5"
+        to_name     = chess.square_name(move.to_square)     # e.g. "f7"
+
+        # File letter → "d-file", "e-file" etc.
+        from_file   = from_name[0]
+        from_rank   = from_name[1]
+
+        if self._hint_level == 0:
+            # Stage 1: piece type and location only
+            self.info_lbl.setText(
+                f"💡 Hint: Move your {piece_name} on the {from_file}-file (rank {from_rank})"
+            )
+            self._hint_level = 1
+        else:
+            # Stage 2: full move revealed
+            try:
+                san = board.san(move)
+            except Exception:
+                san = move_uci
+            captured = board.piece_at(move.to_square)
+            if captured:
+                action = f"capture on {to_name}"
+            else:
+                action = f"move to {to_name}"
+            self.info_lbl.setText(
+                f"💡 Full hint: {piece_name} on {from_name} → {action}  ({san})"
+            )
+            self._hint_level = 2
+
+    # ── Show Solution (animated) ───────────────────────────────────────────────
 
     def _show_solution(self):
         if not self._current:
             return
-        # Replay remaining solution moves on the board
+        if not self._failed:
+            # Only count as failed the first time Show Solution is pressed
+            self._failed        = True
+            self._failed_count += 1
+            self._attempted    += 1
+            self._update_stats()
         self.board_w.set_interactive(False)
-        self._failed = True
-        board = self.board_w.board
-        san_moves = []
-        for uci in self._current.moves_uci[self._move_idx:]:
-            try:
-                move = chess.Move.from_uci(uci)
-                san_moves.append(board.san(move))
-                board.push(move)
-            except Exception:
-                san_moves.append(uci)
-        self.board_w.set_board(board)
-        self.info_lbl.setText(
-            "Solution: " + "  ".join(san_moves)
-        )
+        self.hint_btn.setEnabled(False)
+        self.solution_btn.setEnabled(False)
+
+        # Queue remaining moves for step-by-step animation
+        self._solution_moves = list(self._current.moves_uci[self._move_idx:])
+        if not self._solution_moves:
+            return
+
+        self.info_lbl.setText("Showing solution…")
         self.result_lbl.setVisible(False)
+        self._solution_timer.start(700)   # 700 ms between moves
+
+    def _solution_step(self):
+        """Called by timer — plays one move of the solution at a time."""
+        if not self._solution_moves:
+            self._solution_timer.stop()
+            self.info_lbl.setText("Solution complete.  Press 'Next Puzzle' to continue.")
+            return
+
+        uci  = self._solution_moves.pop(0)
+        move = chess.Move.from_uci(uci)
+        board = self.board_w.board
+
+        try:
+            san = board.san(move)
+        except Exception:
+            san = uci
+
+        self.board_w.push_move(move)
+        self.info_lbl.setText(f"Solution: {san}")
+
+        if not self._solution_moves:
+            self._solution_timer.stop()
+            self.info_lbl.setText("Solution complete.  Press 'Next Puzzle' to continue.")
 
     def _update_stats(self):
         self.solved_lbl.setText(f"Solved:  {self._solved_count}")

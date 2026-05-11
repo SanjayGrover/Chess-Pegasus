@@ -98,9 +98,11 @@ class BoardWidget(QWidget):
         self.position_changed.emit(self._board)
 
     def set_interactive(self, value: bool):
-        """Disable interaction during analysis playback."""
-        self._interactive = value
-        self._selected_sq = None
+        """Enable or disable interaction. Enabling always clears the game-over overlay."""
+        if value:
+            self._game_over_text = None   # never let a stale overlay block re-enable
+        self._interactive   = value
+        self._selected_sq   = None
         self._legal_targets = set()
         self.update()
 
@@ -168,8 +170,9 @@ class BoardWidget(QWidget):
         row = y // sq
         if self._flipped:
             col = 7 - col
-            row = 7 - row
+            # _sq_to_rect flipped: y = rank * sq  → rank = row (no inversion)
         else:
+            # _sq_to_rect normal: y = (7 - rank) * sq  → rank = 7 - row
             row = 7 - row
         return chess.square(col, row)
 
@@ -321,7 +324,10 @@ class BoardWidget(QWidget):
         banner   = QRect(orig.x(), banner_y, sq_size * 8, banner_h)
 
         # Gold gradient banner background
-        grad = QLinearGradient(banner.topLeft(), banner.bottomLeft())
+        grad = QLinearGradient(
+            float(banner.left()), float(banner.top()),
+            float(banner.left()), float(banner.bottom())
+        )
         grad.setColorAt(0.0, QColor("#3a2a00"))
         grad.setColorAt(0.5, QColor("#5a4200"))
         grad.setColorAt(1.0, QColor("#3a2a00"))
@@ -396,10 +402,13 @@ class BoardWidget(QWidget):
                 self._last_move     = move
                 self._selected_sq   = None
                 self._legal_targets = set()
+                stack_depth = len(self._board.move_stack)
                 self.update()
                 self.move_made.emit(move)
                 self.position_changed.emit(self._board)
-                self._check_game_over()
+                # Only check game-over if the move wasn't undone by a signal handler
+                if len(self._board.move_stack) == stack_depth:
+                    self._check_game_over()
             elif sq == self._selected_sq:
                 # Click same square: deselect
                 self._selected_sq   = None
