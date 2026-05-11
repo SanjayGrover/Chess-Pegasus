@@ -76,12 +76,13 @@ class BoardWidget(QWidget):
 
         self._board        : chess.Board       = chess.Board()
         self._flipped      : bool              = flipped
-        self._selected_sq  : int | None        = None   # square user clicked
-        self._legal_targets: set[int]          = set()  # squares piece can go to
+        self._selected_sq  : int | None        = None
+        self._legal_targets: set[int]          = set()
         self._last_move    : chess.Move | None = None
         self._hover_sq      : int | None        = None
-        self._interactive   : bool              = True   # False in analysis replay
-        self._game_over_text: str | None        = None   # set when game ends
+        self._interactive   : bool              = True
+        self._game_over_text: str | None        = None
+        self._classification: tuple | None      = None  # (symbol, bg_color) for badge
 
         self.setMouseTracking(True)
 
@@ -94,8 +95,18 @@ class BoardWidget(QWidget):
         self._selected_sq    = None
         self._legal_targets  = set()
         self._game_over_text = None
+        self._classification = None
         self.update()
         self.position_changed.emit(self._board)
+
+    def set_classification(self, symbol: str, bg_color: str):
+        """Show a classification badge on the last-moved piece's destination square."""
+        self._classification = (symbol, bg_color)
+        self.update()
+
+    def clear_classification(self):
+        self._classification = None
+        self.update()
 
     def set_interactive(self, value: bool):
         """Enable or disable interaction. Enabling always clears the game-over overlay."""
@@ -190,9 +201,38 @@ class BoardWidget(QWidget):
         self._draw_squares(p)
         self._draw_coordinates(p)
         self._draw_pieces(p)
+        self._draw_classification_badge(p)
         self._draw_legal_dots(p)
         self._draw_game_over_overlay(p)
         p.end()
+
+    def _draw_classification_badge(self, p: QPainter):
+        """Draw a circular classification badge on the top-right of the last-moved square."""
+        if not self._classification or not self._last_move:
+            return
+        symbol, bg_hex = self._classification
+        sq_size = self._square_size()
+        rect    = self._sq_to_rect(self._last_move.to_square)
+
+        # Badge size: ~28% of square, clamped to reasonable range
+        r = max(10, min(18, int(sq_size * 0.28)))
+        # Position: top-right corner with slight inset
+        cx = rect.right()  - r
+        cy = rect.top()    + r
+
+        # Circle background
+        bg = QColor(bg_hex)
+        p.setPen(QPen(QColor(255, 255, 255, 180), 1.5))
+        p.setBrush(QBrush(bg))
+        p.drawEllipse(QPoint(cx, cy), r, r)
+
+        # Symbol text
+        font = QFont("Segoe UI", max(6, int(r * 0.85)), QFont.Weight.Bold)
+        p.setFont(font)
+        p.setPen(QColor("#ffffff"))
+        badge_rect = QRect(cx - r, cy - r, r * 2, r * 2)
+        p.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, symbol)
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_border(self, p: QPainter):
         sq   = self._square_size()

@@ -102,7 +102,7 @@ class AnalyzeTab(QWidget):
 
         # Game info label
         self.game_info = QLabel("No game loaded.")
-        self.game_info.setStyleSheet("color:#ffffff; font-size:11px;")
+        self.game_info.setStyleSheet("color:#6a5a3a; font-size:11px;")
         left.addWidget(self.game_info)
 
         # Progress bar
@@ -158,6 +158,12 @@ class AnalyzeTab(QWidget):
         self.flip_btn.setStyleSheet(btn_style)
         self.flip_btn.clicked.connect(self.board_w.flip)
         nav.addWidget(self.flip_btn)
+
+        self.review_btn = QPushButton("📊 Game Review")
+        self.review_btn.setStyleSheet(btn_style)
+        self.review_btn.setEnabled(False)
+        self.review_btn.clicked.connect(self._toggle_review)
+        nav.addWidget(self.review_btn)
 
         left.addLayout(nav)
         root.addLayout(left, stretch=3)
@@ -288,8 +294,14 @@ class AnalyzeTab(QWidget):
         self._analysis = analysis
         self.progress.setVisible(False)
         self.analyze_btn.setEnabled(True)
-        self.panel.load_analysis(analysis)
-        # Select current ply if possible
+        self.review_btn.setEnabled(True)
+        self.review_btn.setText("📋 Move List")   # panel auto-switches to move list
+
+        # Extract player names from PGN headers
+        white_name = analysis.headers.get("White", "White")
+        black_name = analysis.headers.get("Black", "Black")
+        self.panel.load_analysis(analysis, white_name, black_name)
+
         if self._current_ply > 0:
             self.panel.select_ply(self._current_ply)
 
@@ -321,15 +333,32 @@ class AnalyzeTab(QWidget):
         total = len(self._positions) - 1
         self.ply_label.setText(f"Move {ply}/{total}")
 
-        # Sync panel selection
+        # Sync panel selection + board badge
         if self._analysis and ply > 0:
             self.panel.select_ply(ply)
+            badge_data = self.panel.classification_for_ply(ply)
+            if badge_data:
+                self.board_w.set_classification(*badge_data)
+            else:
+                self.board_w.clear_classification()
+        else:
+            self.board_w.clear_classification()
 
         # Update nav buttons
         self.btn_start.setEnabled(ply > 0)
         self.btn_prev.setEnabled(ply > 0)
         self.btn_next.setEnabled(ply < total)
         self.btn_end.setEnabled(ply < total)
+
+    def _toggle_review(self):
+        """Toggle between Game Review summary and Move List."""
+        stack = self.panel._stack
+        if stack.currentIndex() == 0:
+            stack.setCurrentIndex(1)
+            self.review_btn.setText("📋 Move List")
+        else:
+            stack.setCurrentIndex(0)
+            self.review_btn.setText("📊 Game Review")
 
     def _on_square_click(self, _sq: int):
         pass   # non-interactive in analysis mode
