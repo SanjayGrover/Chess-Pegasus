@@ -37,7 +37,21 @@ class AnalyzeTab(QWidget):
         self._thread    : QThread | None = None
         self._worker    : AnalyzerWorker | None = None
 
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._build_ui()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key.Key_Right, Qt.Key.Key_Down):
+            self._goto_ply(self._current_ply + 1)
+        elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up):
+            self._goto_ply(self._current_ply - 1)
+        elif key == Qt.Key.Key_Home:
+            self._goto_ply(0)
+        elif key == Qt.Key.Key_End:
+            self._goto_ply(len(self._positions) - 1)
+        else:
+            super().keyPressEvent(event)
 
     # ── UI ─────────────────────────────────────────────────────────────────────
 
@@ -88,7 +102,7 @@ class AnalyzeTab(QWidget):
 
         # Game info label
         self.game_info = QLabel("No game loaded.")
-        self.game_info.setStyleSheet("color:#6a5a3a; font-size:11px;")
+        self.game_info.setStyleSheet("color:#ffffff; font-size:11px;")
         left.addWidget(self.game_info)
 
         # Progress bar
@@ -98,7 +112,7 @@ class AnalyzeTab(QWidget):
         self.progress.setFormat("Analysing…  %v / %m moves")
         self.progress.setStyleSheet(
             "QProgressBar{background:#252018;border:1px solid #3a3020;"
-            "border-radius:4px;color:#ffffff;font-size:11px;}"
+            "border-radius:4px;color:#c9a96e;font-size:11px;}"
             "QProgressBar::chunk{background:#c9a96e;border-radius:4px;}"
         )
         left.addWidget(self.progress)
@@ -173,7 +187,7 @@ class AnalyzeTab(QWidget):
         lay = QVBoxLayout(dlg)
 
         lbl = QLabel("Paste your PGN below:")
-        lbl.setStyleSheet("color:#ffffff;")
+        lbl.setStyleSheet("color:#8a7a5a;")
         lay.addWidget(lbl)
 
         txt = QTextEdit()

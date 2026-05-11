@@ -16,7 +16,7 @@ Used by:  play_tab (Part 3)  and  analyze_tab (Part 4)
 
 import chess
 from PyQt6.QtWidgets import QWidget, QSizePolicy
-from PyQt6.QtCore    import Qt, QRect, QPoint, QPointF, QSize, pyqtSignal
+from PyQt6.QtCore    import Qt, QRect, QPoint, QSize, pyqtSignal
 from PyQt6.QtGui     import (
     QPainter, QColor, QFont, QFontMetrics,
     QBrush, QPen, QLinearGradient, QRadialGradient
@@ -107,17 +107,6 @@ class BoardWidget(QWidget):
     def flip(self):
         self._flipped = not self._flipped
         self.update()
-        
-    def reset_game(self):
-        """Clears the game-over state and resets the board to the starting position."""
-        self._board = chess.Board()
-        self._last_move = None
-        self._selected_sq = None
-        self._legal_targets = set()
-        self._game_over_text = None
-        self._interactive = True
-        self.update()
-        self.position_changed.emit(self._board)
 
     @property
     def board(self) -> chess.Board:
@@ -332,7 +321,7 @@ class BoardWidget(QWidget):
         banner   = QRect(orig.x(), banner_y, sq_size * 8, banner_h)
 
         # Gold gradient banner background
-        grad = QLinearGradient(QPointF(banner.topLeft()), QPointF(banner.bottomLeft()))
+        grad = QLinearGradient(banner.topLeft(), banner.bottomLeft())
         grad.setColorAt(0.0, QColor("#3a2a00"))
         grad.setColorAt(0.5, QColor("#5a4200"))
         grad.setColorAt(1.0, QColor("#3a2a00"))
@@ -348,20 +337,20 @@ class BoardWidget(QWidget):
         main_text = lines[0]
         sub_text  = lines[1] if len(lines) > 1 else ""
 
-        # FIX: Combine PyQt6 flags safely by casting to int
-        main_flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap)
-        sub_flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignBottom) | int(Qt.TextFlag.TextWordWrap)
-
         main_font = QFont("Segoe UI", max(16, sq_size // 3), QFont.Weight.Bold)
         p.setFont(main_font)
         p.setPen(QColor("#f0d060"))
-        p.drawText(banner, main_flags, "\n" + main_text)
+        p.drawText(banner, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                   | Qt.TextFlag.TextWordWrap,
+                   "\n" + main_text)
 
         if sub_text:
             sub_font = QFont("Segoe UI", max(10, sq_size // 5))
             p.setFont(sub_font)
             p.setPen(QColor("#c9a96e"))
-            p.drawText(banner, sub_flags, sub_text + "\n")
+            p.drawText(banner, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+                       | Qt.TextFlag.TextWordWrap,
+                       sub_text + "\n")
 
     # ── Mouse interaction ──────────────────────────────────────────────────────
 
@@ -464,6 +453,17 @@ class BoardWidget(QWidget):
 
     def resizeEvent(self, _event):
         self.update()
+
+    def keyPressEvent(self, event):
+        # Let the parent (e.g. AnalyzeTab) handle navigation keys
+        if event.key() in (
+            Qt.Key.Key_Left,  Qt.Key.Key_Right,
+            Qt.Key.Key_Up,    Qt.Key.Key_Down,
+            Qt.Key.Key_Home,  Qt.Key.Key_End,
+        ):
+            event.ignore()   # bubble up to parent
+        else:
+            super().keyPressEvent(event)
 
     def sizeHint(self) -> QSize:
         return QSize(600, 600)
