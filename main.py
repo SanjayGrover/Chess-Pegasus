@@ -408,13 +408,14 @@ class MainWindow(QMainWindow):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
+    # Must be set before QApplication is created
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
 
     window = MainWindow()
     window.show()

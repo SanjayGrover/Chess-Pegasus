@@ -83,6 +83,8 @@ class BoardWidget(QWidget):
         self._interactive   : bool              = True
         self._game_over_text: str | None        = None
         self._classification: tuple | None      = None  # (symbol, bg_color) for badge
+        # Analysis arrows: (from_sq, to_sq, color_hex)
+        self._arrows        : list[tuple]       = []
 
         self.setMouseTracking(True)
 
@@ -96,6 +98,7 @@ class BoardWidget(QWidget):
         self._legal_targets  = set()
         self._game_over_text = None
         self._classification = None
+        self._arrows         = []
         self.update()
         self.position_changed.emit(self._board)
 
@@ -106,6 +109,19 @@ class BoardWidget(QWidget):
 
     def clear_classification(self):
         self._classification = None
+        self.update()
+
+    def set_arrows(self, arrows: list[tuple]):
+        """
+        Draw analysis arrows on the board.
+        Each arrow is (from_sq, to_sq, color_hex).
+        Call with [] to clear.
+        """
+        self._arrows = arrows
+        self.update()
+
+    def clear_arrows(self):
+        self._arrows = []
         self.update()
 
     def set_interactive(self, value: bool):
@@ -200,11 +216,128 @@ class BoardWidget(QWidget):
         self._draw_border(p)
         self._draw_squares(p)
         self._draw_coordinates(p)
+        self._draw_arrows(p)
         self._draw_pieces(p)
         self._draw_classification_badge(p)
         self._draw_legal_dots(p)
         self._draw_game_over_overlay(p)
         p.end()
+
+    def _draw_arrows(self, p: QPainter):
+        """
+        Draw analysis arrows.
+        Each arrow: (from_sq, to_sq, color_hex)
+        The arrow is drawn as a thick line with a filled triangular arrowhead.
+        Knights draw an L-shaped path matching how they actually move.
+        """
+        if not self._arrows:
+            return
+
+        import math
+        sq_size = self._square_size()
+        shaft_w = max(4, int(sq_size * 0.13))   # line thickness
+        head_r  = max(8, int(sq_size * 0.22))   # arrowhead size
+
+        for from_sq, to_sq, color_hex in self._arrows:
+            if from_sq == to_sq:
+                continue
+
+            color = QColor(color_hex)
+            color.setAlpha(210)
+
+            from_rect = self._sq_to_rect(from_sq)
+            to_rect   = self._sq_to_rect(to_sq)
+
+            fx = from_rect.center().x()
+            fy = from_rect.center().y()
+            tx = to_rect.center().x()
+            ty = to_rect.center().y()
+
+            piece = self._board.piece_at(from_sq)
+            is_knight = piece and piece.piece_type == chess.KNIGHT
+
+            pen = QPen(color, shaft_w, Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+
+            if is_knight:
+                # L-shaped path: horizontal then vertical (or whichever fits better)
+                df = chess.square_file(to_sq) - chess.square_file(from_sq)
+                dr = chess.square_rank(to_sq) - chess.square_rank(from_sq)
+
+                # Determine elbow point — go horizontal first if |df| > |dr|
+                if abs(df) >= abs(dr):
+                    # go horizontal first to tx, then vertical to ty
+                    elbow_x, elbow_y = tx, fy
+                else:
+                    # go vertical first to ty, then horizontal to tx
+                    elbow_x, elbow_y = fx, ty
+
+                # Shorten final segment slightly so arrowhead doesn't overlap centre
+                dx = tx - elbow_x
+                dy = ty - elbow_y
+                dist = math.hypot(dx, dy)
+                if dist > 0:
+                    shorten = head_r * 0.6
+                    end_x = tx - dx / dist * shorten
+                    end_y = ty - dy / dist * shorten
+                else:
+                    end_x, end_y = tx, ty
+
+                from PyQt6.QtCore import QPointF
+                p.drawLine(QPointF(fx, fy), QPointF(elbow_x, elbow_y))
+                p.drawLine(QPointF(elbow_x, elbow_y), QPointF(end_x, end_y))
+
+                # Arrowhead at destination
+                self._draw_arrowhead(p, elbow_x, elbow_y, tx, ty, head_r, color)
+
+            else:
+                # Straight arrow — shorten tail so it doesn't cover piece centre
+                dx = tx - fx
+                dy = ty - fy
+                dist = math.hypot(dx, dy)
+                if dist == 0:
+                    continue
+                # Shorten tail by ~20% of sq_size
+                tail_shorten = sq_size * 0.20
+                head_shorten = head_r * 0.6
+                sx = fx + dx / dist * tail_shorten
+                sy = fy + dy / dist * tail_shorten
+                ex = tx - dx / dist * head_shorten
+                ey = ty - dy / dist * head_shorten
+
+                from PyQt6.QtCore import QPointF
+                p.drawLine(QPointF(sx, sy), QPointF(ex, ey))
+                self._draw_arrowhead(p, sx, sy, tx, ty, head_r, color)
+
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(Qt.PenStyle.NoPen)
+
+    def _draw_arrowhead(self, p: QPainter, from_x, from_y, tx, ty, head_r, color):
+        """Draw a filled triangular arrowhead pointing from (from_x,from_y) toward (tx,ty)."""
+        import math
+        from PyQt6.QtCore  import QPointF
+        from PyQt6.QtGui   import QPolygonF
+
+        dx = tx - from_x
+        dy = ty - from_y
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        ux, uy = dx / dist, dy / dist          # unit vector toward dest
+        px, py = -uy, ux                        # perpendicular
+
+        tip    = QPointF(tx, ty)
+        base_x = tx - ux * head_r
+        base_y = ty - uy * head_r
+        left   = QPointF(base_x + px * head_r * 0.55, base_y + py * head_r * 0.55)
+        right  = QPointF(base_x - px * head_r * 0.55, base_y - py * head_r * 0.55)
+
+        poly = QPolygonF([tip, left, right])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(color))
+        p.drawPolygon(poly)
 
     def _draw_classification_badge(self, p: QPainter):
         """Draw a circular classification badge on the top-right of the last-moved square."""
@@ -214,19 +347,15 @@ class BoardWidget(QWidget):
         sq_size = self._square_size()
         rect    = self._sq_to_rect(self._last_move.to_square)
 
-        # Badge size: ~28% of square, clamped to reasonable range
-        r = max(10, min(18, int(sq_size * 0.28)))
-        # Position: top-right corner with slight inset
-        cx = rect.right()  - r
-        cy = rect.top()    + r
+        r  = max(10, min(18, int(sq_size * 0.28)))
+        cx = rect.right() - r
+        cy = rect.top()   + r
 
-        # Circle background
         bg = QColor(bg_hex)
         p.setPen(QPen(QColor(255, 255, 255, 180), 1.5))
         p.setBrush(QBrush(bg))
         p.drawEllipse(QPoint(cx, cy), r, r)
 
-        # Symbol text
         font = QFont("Segoe UI", max(6, int(r * 0.85)), QFont.Weight.Bold)
         p.setFont(font)
         p.setPen(QColor("#ffffff"))

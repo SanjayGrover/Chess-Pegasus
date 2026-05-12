@@ -112,7 +112,7 @@ class AnalyzeTab(QWidget):
         self.progress.setFormat("Analysing…  %v / %m moves")
         self.progress.setStyleSheet(
             "QProgressBar{background:#252018;border:1px solid #3a3020;"
-            "border-radius:4px;color:#c9a96e;font-size:11px;}"
+            "border-radius:4px;color:#ffffff;font-size:11px;}"
             "QProgressBar::chunk{background:#c9a96e;border-radius:4px;}"
         )
         left.addWidget(self.progress)
@@ -333,15 +333,26 @@ class AnalyzeTab(QWidget):
         total = len(self._positions) - 1
         self.ply_label.setText(f"Move {ply}/{total}")
 
-        # Sync panel selection + board badge
+        # ── Arrows + badge ─────────────────────────────────────────────────
         if self._analysis and ply > 0:
             self.panel.select_ply(ply)
+            ma = self._analysis.moves[ply - 1]   # ply is 1-indexed
+
+            # Green arrow — engine's best move suggestion
+            arrows = []
+            if ma.best_move:
+                arrows.append((ma.best_move.from_square, ma.best_move.to_square, "#6aaa3a"))
+
+            self.board_w.set_arrows(arrows)
+
+            # Badge on destination square
             badge_data = self.panel.classification_for_ply(ply)
             if badge_data:
                 self.board_w.set_classification(*badge_data)
             else:
                 self.board_w.clear_classification()
         else:
+            self.board_w.clear_arrows()
             self.board_w.clear_classification()
 
         # Update nav buttons
